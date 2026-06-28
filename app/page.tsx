@@ -99,6 +99,11 @@ export default function Dashboard() {
   const [pinned, setPinned] = useState<string[]>([]);
   const [starredView, setStarredView] = useState(false);
   const [deepScan, setDeepScan] = useState(false);
+  const [deepProjects, setDeepProjects] = useState<Set<string>>(new Set());
+  const [deepDocsByProject, setDeepDocsByProject] = useState<
+    Record<string, MarkdownDoc[]>
+  >({});
+  const [deepBusy, setDeepBusy] = useState(false);
   const hydrated = useRef(false);
 
   // Sync theme state + load starred/pinned from localStorage on mount
@@ -299,18 +304,31 @@ export default function Dashboard() {
     };
   }, [selectedDoc]);
 
+  // Effective doc set: curated base, with any per-project deep results swapped
+  // in. When global deep is on, the base index is already fully deep.
+  const allDocs = useMemo(() => {
+    if (!index) return [];
+    if (deepScan || deepProjects.size === 0) return index.docs;
+    const overridden = new Set(
+      [...deepProjects].filter((p) => deepDocsByProject[p])
+    );
+    if (overridden.size === 0) return index.docs;
+    const base = index.docs.filter((d) => !overridden.has(d.project));
+    const extra = [...overridden].flatMap((p) => deepDocsByProject[p]);
+    return [...base, ...extra];
+  }, [index, deepScan, deepProjects, deepDocsByProject]);
+
   const fuse = useMemo(() => {
-    if (!index) return null;
-    return new Fuse(index.docs, {
+    return new Fuse(allDocs, {
       keys: ['fileName', 'title', 'project', 'preview', 'headings', 'tags'],
       threshold: 0.3,
     });
-  }, [index]);
+  }, [allDocs]);
 
   // Search + project/starred scope (before the doc-type filter)
   const scopedDocs = useMemo(() => {
     if (!index) return [];
-    let docs = index.docs;
+    let docs = allDocs;
     if (search && fuse) {
       docs = fuse.search(search).map((result) => result.item);
     }
@@ -320,7 +338,7 @@ export default function Dashboard() {
       docs = docs.filter((doc) => doc.project === activeProject);
     }
     return docs;
-  }, [index, search, activeProject, fuse, starredView, starredSet]);
+  }, [index, allDocs, search, activeProject, fuse, starredView, starredSet]);
 
   const typeCounts = useMemo(
     () => ({
@@ -350,16 +368,15 @@ export default function Dashboard() {
 
   // Projects with doc counts, filtered by the project search box
   const projectList = useMemo(() => {
-    if (!index) return [];
     const counts = new Map<string, number>();
-    for (const doc of index.docs) {
+    for (const doc of allDocs) {
       counts.set(doc.project, (counts.get(doc.project) ?? 0) + 1);
     }
     const q = projectFilter.trim().toLowerCase();
     return Array.from(counts.entries())
       .filter(([name]) => !q || name.toLowerCase().includes(q))
       .sort((a, b) => a[0].localeCompare(b[0]));
-  }, [index, projectFilter]);
+  }, [allDocs, projectFilter]);
 
   const pinnedProjects = useMemo(
     () => projectList.filter(([name]) => pinnedSet.has(name)),
@@ -441,7 +458,38 @@ export default function Dashboard() {
     }
   };
 
-  const toggleDeepScan = () => {
+  const fetchProjectDeep = async (project: string) => {
+    setDeepBusy(true);
+    try {
+      const res = await fetch(
+        `/api/index?deep=1&project=${encodeURIComponent(project)}`
+      );
+      if (res.ok) {
+        const data: Index = await res.json();
+        setDeepDocsByProject((prev) => ({ ...prev, [project]: data.docs }));
+      }
+    } catch {
+      // ignore
+    } finally {
+      setDeepBusy(false);
+    }
+  };
+
+  // Deep toggle is contextual: per-project when one is selected, else global.
+  const toggleDeep = () => {
+    if (activeProject) {
+      setDeepProjects((prev) => {
+        const next = new Set(prev);
+        if (next.has(activeProject)) {
+          next.delete(activeProject);
+        } else {
+          next.add(activeProject);
+          fetchProjectDeep(activeProject);
+        }
+        return next;
+      });
+      return;
+    }
     const next = !deepScan;
     setDeepScan(next);
     try {
@@ -450,6 +498,10 @@ export default function Dashboard() {
       // ignore
     }
   };
+
+  const deepActive = activeProject
+    ? deepScan || deepProjects.has(activeProject)
+    : deepScan;
 
   // Build a /files/<rootIndex>/<relpath> URL so HTML docs (and their relative
   // assets) can be served and rendered in an iframe.
@@ -475,7 +527,7 @@ export default function Dashboard() {
     return `/files/${bestI}/${segs}`;
   };
 
-  const totalDocs = index?.docs.length ?? 0;
+  const totalDocs = allDocs.length;
 
   return (
     <div className="flex h-screen overflow-hidden bg-white text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100">
@@ -524,19 +576,26 @@ export default function Dashboard() {
           </div>
           <div className="flex items-center gap-0.5">
             <button
-              onClick={toggleDeepScan}
+              onClick={toggleDeep}
+              disabled={deepBusy}
               title={
-                deepScan
-                  ? 'Deep scan ON: indexing every subfolder. Click for curated (docs folders only).'
-                  : 'Deep scan OFF: curated folders only. Click to index every subfolder (slower; for disorganised projects).'
+                activeProject
+                  ? deepActive
+                    ? `Deep scan ON for ${activeProject}. Click to go back to curated folders.`
+                    : `Deep scan ${activeProject} only: index every subfolder (e.g. tests/, src/).`
+                  : deepScan
+                    ? 'Global deep scan ON: every subfolder of every project. Click for curated.'
+                    : 'Select a project to deep-scan just it, or click to deep-scan everything.'
               }
               className={`grid place-items-center w-7 h-7 rounded-md transition-colors ${
-                deepScan
+                deepActive
                   ? 'bg-indigo-100 text-indigo-600 dark:bg-indigo-950/50 dark:text-indigo-300'
                   : 'text-zinc-500 hover:text-zinc-900 hover:bg-zinc-200/60 dark:text-zinc-400 dark:hover:text-zinc-100 dark:hover:bg-zinc-800'
               }`}
             >
-              <FolderSearch className="w-4 h-4" />
+              <FolderSearch
+                className={`w-4 h-4 ${deepBusy ? 'animate-pulse' : ''}`}
+              />
             </button>
             <button
               onClick={toggleTheme}
@@ -1084,7 +1143,7 @@ export default function Dashboard() {
 
       <CommandPalette
         open={paletteOpen}
-        docs={index?.docs ?? []}
+        docs={allDocs}
         onClose={() => setPaletteOpen(false)}
         onSelect={handlePaletteSelect}
       />

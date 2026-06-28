@@ -431,113 +431,131 @@ function deriveAlias(folderNames: string[]): string {
   return alias.length >= 5 ? alias : '';
 }
 
+// Resolve canonical project name -> absolute path to scan. Reads directory
+// entries only (cheap), so it can be reused for both the full build and a
+// single-project deep scan.
+function resolveProjectPaths(): {
+  toScan: Map<string, string>;
+  worktreesSkipped: number;
+  orphansFolded: number;
+} {
+  const toScan = new Map<string, string>();
+  const worktreeMainRepos = new Map<string, string>();
+  const worktreeFolders = new Map<string, string[]>();
+  const orphans: { name: string; path: string }[] = [];
+  let worktreesSkipped = 0;
+
+  for (const baseDir of INDEX_DIRS) {
+    if (!fs.existsSync(baseDir)) continue;
+
+    try {
+      const entries = fs.readdirSync(baseDir, { withFileTypes: true });
+
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        if (SKIP_DIRS.has(entry.name.toLowerCase())) continue;
+        if (entry.name.startsWith('.')) continue;
+
+        const projectPath = path.join(baseDir, entry.name);
+        const klass = classifyFolder(projectPath);
+
+        if (klass.kind === 'worktree' && !config.includeWorktrees) {
+          worktreesSkipped++;
+          if (!worktreeMainRepos.has(klass.project)) {
+            worktreeMainRepos.set(klass.project, klass.mainRepoDir);
+          }
+          const list = worktreeFolders.get(klass.project) ?? [];
+          list.push(entry.name);
+          worktreeFolders.set(klass.project, list);
+          continue;
+        }
+
+        if (klass.kind === 'main' || klass.hasGit) {
+          if (!toScan.has(klass.project)) toScan.set(klass.project, projectPath);
+          continue;
+        }
+
+        orphans.push({ name: entry.name, path: projectPath });
+      }
+    } catch (e) {
+      console.error(`[Indexer] Error scanning ${baseDir}:`, e);
+    }
+  }
+
+  // Alias map: auto-learned from live worktrees, overlaid with config aliases.
+  const aliasMap = new Map<string, string>();
+  for (const [project, folders] of worktreeFolders) {
+    const alias = deriveAlias(folders);
+    if (!alias) continue;
+    let conflict = false;
+    for (const name of toScan.keys()) {
+      if (name !== project && (name === alias || name.startsWith(alias + '-'))) {
+        conflict = true;
+        break;
+      }
+    }
+    if (!conflict) aliasMap.set(alias, project);
+  }
+  for (const [alias, project] of Object.entries(config.aliases)) {
+    aliasMap.set(alias, project);
+  }
+
+  // Fold orphaned worktree dirs into their canonical project.
+  let orphansFolded = 0;
+  for (const orphan of orphans) {
+    let matched: string | null = null;
+    for (const [alias, project] of aliasMap) {
+      if (orphan.name === alias || orphan.name.startsWith(alias + '-')) {
+        matched = project;
+        break;
+      }
+    }
+    if (matched) {
+      orphansFolded++;
+    } else if (!toScan.has(orphan.name)) {
+      toScan.set(orphan.name, orphan.path);
+    }
+  }
+
+  // Safety net: scan a worktree's canonical repo even if it's outside INDEX_DIRS.
+  for (const [project, mainRepoDir] of worktreeMainRepos) {
+    if (!toScan.has(project) && fs.existsSync(mainRepoDir)) {
+      toScan.set(project, mainRepoDir);
+    }
+  }
+
+  return { toScan, worktreesSkipped, orphansFolded };
+}
+
+// Per-project deep index, built synchronously (one project is fast).
+const projectDeepCaches = new Map<string, { index: Index; time: number }>();
+
+export function buildProjectDeep(project: string): Index {
+  const now = Date.now();
+  const cached = projectDeepCaches.get(project);
+  if (cached && now - cached.time < CACHE_DURATION) return cached.index;
+
+  const { toScan } = resolveProjectPaths();
+  const projectPath = toScan.get(project);
+  const docs: MarkdownDoc[] = [];
+  if (projectPath) {
+    scanProjectDir(projectPath, project, docs, true);
+    docs.sort((a, b) => b.modified - a.modified);
+  }
+
+  const index: Index = { docs, roots: INDEX_DIRS, lastUpdated: now };
+  projectDeepCaches.set(project, { index, time: now });
+  console.log(`[Indexer] Deep-scanned project "${project}": ${docs.length} docs`);
+  return index;
+}
+
 async function rebuildIndexAsync(deep: boolean): Promise<void> {
   try {
     console.log(
       `[Indexer] Building fresh index (async, ${deep ? 'deep' : 'curated'})...`
     );
     const docs: MarkdownDoc[] = [];
-
-    // Canonical project name -> absolute path of the folder we'll scan.
-    const toScan = new Map<string, string>();
-    // Main-repo dirs referenced by worktrees, so a worktree's canonical repo
-    // still gets scanned even if it lives outside INDEX_DIRS.
-    const worktreeMainRepos = new Map<string, string>();
-    // canonical project -> list of its live worktree folder names (for aliases).
-    const worktreeFolders = new Map<string, string[]>();
-    // Folders with no `.git` - candidate orphaned worktree leftovers.
-    const orphans: { name: string; path: string }[] = [];
-    let worktreesSkipped = 0;
-
-    for (const baseDir of INDEX_DIRS) {
-      if (!fs.existsSync(baseDir)) {
-        console.log(`[Indexer] Skipping ${baseDir} (does not exist)`);
-        continue;
-      }
-
-      console.log(`[Indexer] Scanning ${baseDir}...`);
-
-      try {
-        const entries = fs.readdirSync(baseDir, { withFileTypes: true });
-
-        for (const entry of entries) {
-          if (!entry.isDirectory()) continue;
-          if (SKIP_DIRS.has(entry.name.toLowerCase())) continue;
-          if (entry.name.startsWith('.')) continue;
-
-          const projectPath = path.join(baseDir, entry.name);
-          const klass = classifyFolder(projectPath);
-
-          if (klass.kind === 'worktree' && !config.includeWorktrees) {
-            worktreesSkipped++;
-            if (!worktreeMainRepos.has(klass.project)) {
-              worktreeMainRepos.set(klass.project, klass.mainRepoDir);
-            }
-            const list = worktreeFolders.get(klass.project) ?? [];
-            list.push(entry.name);
-            worktreeFolders.set(klass.project, list);
-            continue;
-          }
-
-          // A real repo (`.git` dir or non-worktree `.git` file) is canonical.
-          if (klass.kind === 'main' || klass.hasGit) {
-            if (!toScan.has(klass.project)) toScan.set(klass.project, projectPath);
-            continue;
-          }
-
-          // No `.git` at all - might be an orphaned worktree dir, decide later.
-          orphans.push({ name: entry.name, path: projectPath });
-        }
-      } catch (e) {
-        console.error(`[Indexer] Error scanning ${baseDir}:`, e);
-      }
-    }
-
-    // Build the effective alias map: auto-learned from live worktrees, then
-    // overlaid with explicit config aliases (explicit wins). An auto alias is
-    // rejected if it collides with a different real repo's name.
-    const aliasMap = new Map<string, string>();
-    for (const [project, folders] of worktreeFolders) {
-      const alias = deriveAlias(folders);
-      if (!alias) continue;
-      let conflict = false;
-      for (const name of toScan.keys()) {
-        if (name !== project && (name === alias || name.startsWith(alias + '-'))) {
-          conflict = true;
-          break;
-        }
-      }
-      if (!conflict) aliasMap.set(alias, project);
-    }
-    for (const [alias, project] of Object.entries(config.aliases)) {
-      aliasMap.set(alias, project);
-    }
-
-    // Fold orphans whose name matches a learned/explicit alias into the
-    // canonical project; otherwise treat them as standalone projects.
-    let orphansFolded = 0;
-    for (const orphan of orphans) {
-      let matched: string | null = null;
-      for (const [alias, project] of aliasMap) {
-        if (orphan.name === alias || orphan.name.startsWith(alias + '-')) {
-          matched = project;
-          break;
-        }
-      }
-      if (matched) {
-        orphansFolded++;
-      } else if (!toScan.has(orphan.name)) {
-        toScan.set(orphan.name, orphan.path);
-      }
-    }
-
-    // Safety net: ensure each worktree's canonical repo gets scanned even if it
-    // lives outside INDEX_DIRS, so collapsing worktrees never loses docs.
-    for (const [project, mainRepoDir] of worktreeMainRepos) {
-      if (!toScan.has(project) && fs.existsSync(mainRepoDir)) {
-        toScan.set(project, mainRepoDir);
-      }
-    }
+    const { toScan, worktreesSkipped, orphansFolded } = resolveProjectPaths();
 
     for (const [project, projectPath] of toScan) {
       scanProjectDir(projectPath, project, docs, deep);
