@@ -1,0 +1,10 @@
+<svg width="220" height="64" viewBox="0 0 220 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="64" height="64" rx="15" fill="#4F46E5"/>
+  <path d="M23 20 L13 32 L23 44" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M41 20 L51 32 L41 44" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M32 19 L32 39" stroke="#C7D2FE" stroke-width="4" stroke-linecap="round"/>
+  <path d="M26 33 L32 40 L38 33" stroke="#C7D2FE" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="80" y="41" font-family="ui-monospace, 'Geist Mono', SFMono-Regular, Menlo, monospace" font-size="30" font-weight="600" letter-spacing="-0.5">
+    <tspan fill="#18181B">html</tspan><tspan fill="#4F46E5">.md</tspan>
+  </text>
+</svg>

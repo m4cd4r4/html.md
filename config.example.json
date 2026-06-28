@@ -1,0 +1,8 @@
+{
+  "indexDirs": ["C:/dev", "C:/work", "~/notes"],
+  "cacheMinutes": 5,
+  "includeWorktrees": false,
+  "aliases": {
+    "myapp": "my-application-monorepo"
+  }
+}
