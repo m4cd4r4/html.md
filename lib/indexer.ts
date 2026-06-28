@@ -452,11 +452,23 @@ function resolveProjectPaths(): {
       const entries = fs.readdirSync(baseDir, { withFileTypes: true });
 
       for (const entry of entries) {
-        if (!entry.isDirectory()) continue;
         if (SKIP_DIRS.has(entry.name.toLowerCase())) continue;
         if (entry.name.startsWith('.')) continue;
 
         const projectPath = path.join(baseDir, entry.name);
+
+        // Accept real directories and symlinks/junctions that resolve to one,
+        // so symlinked project roots are indexed.
+        let isDir = entry.isDirectory();
+        if (!isDir && entry.isSymbolicLink()) {
+          try {
+            isDir = fs.statSync(projectPath).isDirectory();
+          } catch {
+            isDir = false;
+          }
+        }
+        if (!isDir) continue;
+
         const klass = classifyFolder(projectPath);
 
         if (klass.kind === 'worktree' && !config.includeWorktrees) {

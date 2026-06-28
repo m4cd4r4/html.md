@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useMemo, useRef } from 'react';
+import { useEffect, useState, useMemo, useRef, type ComponentPropsWithoutRef } from 'react';
 import dynamic from 'next/dynamic';
 import Fuse from 'fuse.js';
 import ReactMarkdown from 'react-markdown';
@@ -525,6 +525,52 @@ export default function Dashboard() {
       .map((s) => encodeURIComponent(s))
       .join('/');
     return `/files/${bestI}/${segs}`;
+  };
+
+  // Resolve a relative markdown image src (e.g. ./demo.gif, docs/x.png) to a
+  // /files/ URL so it serves from disk, the same way HTML iframe assets do.
+  // External (http:, data:), absolute (/), and anchor (#) srcs are left alone.
+  const mdImageUrl = (src: string): string => {
+    if (!src) return src;
+    if (/^[a-z]+:/i.test(src) || src.startsWith('//') || src.startsWith('/') || src.startsWith('#')) {
+      return src;
+    }
+    if (!index || !selectedDoc) return src;
+    const docPath = selectedDoc.path.replace(/\\/g, '/');
+    const parts = docPath.slice(0, docPath.lastIndexOf('/')).split('/');
+    for (const seg of src.split(/[?#]/)[0].split('/')) {
+      if (seg === '' || seg === '.') continue;
+      if (seg === '..') parts.pop();
+      else parts.push(seg);
+    }
+    const abs = parts.join('/');
+    const al = abs.toLowerCase();
+    let bestI = -1;
+    let bestLen = -1;
+    index.roots.forEach((r, i) => {
+      const rl = r.replace(/\\/g, '/').replace(/\/$/, '').toLowerCase();
+      if ((al === rl || al.startsWith(rl + '/')) && rl.length > bestLen) {
+        bestI = i;
+        bestLen = rl.length;
+      }
+    });
+    if (bestI === -1) return src;
+    const segs = abs
+      .slice(bestLen + 1)
+      .split('/')
+      .map((s) => encodeURIComponent(s))
+      .join('/');
+    return `/files/${bestI}/${segs}`;
+  };
+
+  const mdComponents = {
+    pre: CodeBlock,
+    img: (props: ComponentPropsWithoutRef<'img'> & { node?: unknown }) => {
+      const { node: _node, src, alt, ...rest } = props;
+      void _node;
+      // eslint-disable-next-line @next/next/no-img-element
+      return <img src={mdImageUrl(typeof src === 'string' ? src : '')} alt={alt ?? ''} {...rest} />;
+    },
   };
 
   const totalDocs = allDocs.length;
@@ -1067,7 +1113,7 @@ export default function Dashboard() {
                       <ReactMarkdown
                         remarkPlugins={[remarkGfm]}
                         rehypePlugins={[rehypeSlug]}
-                        components={{ pre: CodeBlock }}
+                        components={mdComponents}
                       >
                         {editBuffer}
                       </ReactMarkdown>
@@ -1090,7 +1136,7 @@ export default function Dashboard() {
                       <ReactMarkdown
                         remarkPlugins={[remarkGfm]}
                         rehypePlugins={[rehypeSlug]}
-                        components={{ pre: CodeBlock }}
+                        components={mdComponents}
                       >
                         {content}
                       </ReactMarkdown>
