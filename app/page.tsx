@@ -585,7 +585,7 @@ export default function Dashboard() {
                     : `Deep scan ${activeProject} only: index every subfolder (e.g. tests/, src/).`
                   : deepScan
                     ? 'Global deep scan ON: every subfolder of every project. Click for curated.'
-                    : 'Select a project to deep-scan just it, or click to deep-scan everything.'
+                    : 'Select a project to deep-scan it, or click now to deep-scan All projects.'
               }
               className={`grid place-items-center w-7 h-7 rounded-md transition-colors ${
                 deepActive
