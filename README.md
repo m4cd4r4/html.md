@@ -15,6 +15,13 @@
 
 ---
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/hero-dark.png" />
+    <img src="docs/screenshots/hero.png" width="900" alt="html.md showing one project's docs with its git worktrees collapsed into a single entry" />
+  </picture>
+</p>
+
 If you work across a lot of repos, your documentation gets scattered: a `README` here, a `PROJECT-PLAN.md` three folders deep there, an HTML report you generated last month and will never find again. **html.md** scans all of it and gives you one fast, searchable place to read it.
 
 The catch with off-the-shelf tools (Foam, Obsidian, Dendron) is they index every file in a folder, so a project with a dozen git worktrees shows up a dozen times. html.md understands git worktrees and collapses them, so **each project appears exactly once.**
@@ -35,9 +42,31 @@ The catch with off-the-shelf tools (Foam, Obsidian, Dendron) is they index every
 - **Sort** - by folder, newest, oldest, or name A-Z
 - **Command palette** - press `Cmd/Ctrl + K` to fuzzy-jump to any doc across every project
 - **Bookmarks** - star documents and pin projects (saved locally)
-- **Reading niceties** - rendered markdown, copy buttons on code blocks, syntax-friendly styling
+- **Edit in place** - open any markdown doc in a syntax-highlighted CodeMirror editor with a live split preview, and save straight to disk
+- **Deep scan** - select one project and scan every subfolder for docs buried in `tests/`, `src/`, etc., or scan everything at once
+- **Reading niceties** - rendered markdown, copy buttons on code blocks, relative images served from disk
 - **Dark mode** - with a no-flash theme toggle
 - **Open in VS Code** - jump straight to any file in your editor
+
+## Screenshots
+
+**Render HTML docs live.** HTML reports, exports, and dashboards are served in a sandboxed frame with their own styles and relative assets intact.
+
+<p align="center">
+  <img src="docs/screenshots/html-view.png" width="900" alt="An HTML doc rendered live inside html.md" />
+</p>
+
+**Edit with a live preview.** Open any markdown doc in a CodeMirror editor and watch the rendered output update beside it.
+
+<p align="center">
+  <img src="docs/screenshots/editor-split.png" width="900" alt="The split-pane markdown editor with live preview" />
+</p>
+
+**Deep-scan a single project.** Select a project to deep-scan just that one (fast and surgical), or scan everything when nothing is selected.
+
+<p align="center">
+  <img src="docs/screenshots/deep-scan-tooltip.png" width="560" alt="The deep-scan control with its tooltip" />
+</p>
 
 ## Quick start
 
