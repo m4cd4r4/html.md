@@ -35,10 +35,12 @@ import {
   Save,
   X,
   Columns2,
+  FolderSearch,
 } from 'lucide-react';
 
 const STARRED_KEY = 'docs-dashboard:starred';
 const PINNED_KEY = 'docs-dashboard:pinned';
+const DEEPSCAN_KEY = 'docs-dashboard:deepscan';
 
 type SortMode = 'default' | 'newest' | 'oldest' | 'name';
 
@@ -96,6 +98,7 @@ export default function Dashboard() {
   const [starred, setStarred] = useState<string[]>([]);
   const [pinned, setPinned] = useState<string[]>([]);
   const [starredView, setStarredView] = useState(false);
+  const [deepScan, setDeepScan] = useState(false);
   const hydrated = useRef(false);
 
   // Sync theme state + load starred/pinned from localStorage on mount
@@ -106,6 +109,7 @@ export default function Dashboard() {
       const p = localStorage.getItem(PINNED_KEY);
       if (s) setStarred(JSON.parse(s));
       if (p) setPinned(JSON.parse(p));
+      setDeepScan(localStorage.getItem(DEEPSCAN_KEY) === '1');
     } catch {
       // ignore
     }
@@ -241,11 +245,12 @@ export default function Dashboard() {
     setTypeFilter('all');
   }, [activeProject]);
 
-  // Fetch index on mount + periodic refresh
+  // Fetch index on mount + when scan mode changes + periodic refresh
   useEffect(() => {
+    const url = `/api/index${deepScan ? '?deep=1' : ''}`;
     const fetchIndex = async () => {
       try {
-        const response = await fetch('/api/index');
+        const response = await fetch(url);
         if (!response.ok) throw new Error('Failed to fetch index');
         const data: Index = await response.json();
         setIndex(data);
@@ -257,10 +262,11 @@ export default function Dashboard() {
       }
     };
 
+    setLoading(true);
     fetchIndex();
     const interval = setInterval(fetchIndex, 30000);
     return () => clearInterval(interval);
-  }, []);
+  }, [deepScan]);
 
   // Fetch the selected document's content (HTML is rendered via iframe instead)
   useEffect(() => {
@@ -424,7 +430,7 @@ export default function Dashboard() {
   const handleRefresh = async () => {
     setLoading(true);
     try {
-      const response = await fetch('/api/index');
+      const response = await fetch(`/api/index${deepScan ? '?deep=1' : ''}`);
       if (!response.ok) throw new Error('Failed to fetch index');
       setIndex(await response.json());
       setError(null);
@@ -432,6 +438,16 @@ export default function Dashboard() {
       setError(e instanceof Error ? e.message : 'Unknown error');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const toggleDeepScan = () => {
+    const next = !deepScan;
+    setDeepScan(next);
+    try {
+      localStorage.setItem(DEEPSCAN_KEY, next ? '1' : '0');
+    } catch {
+      // ignore
     }
   };
 
@@ -507,6 +523,21 @@ export default function Dashboard() {
             </span>
           </div>
           <div className="flex items-center gap-0.5">
+            <button
+              onClick={toggleDeepScan}
+              title={
+                deepScan
+                  ? 'Deep scan ON: indexing every subfolder. Click for curated (docs folders only).'
+                  : 'Deep scan OFF: curated folders only. Click to index every subfolder (slower; for disorganised projects).'
+              }
+              className={`grid place-items-center w-7 h-7 rounded-md transition-colors ${
+                deepScan
+                  ? 'bg-indigo-100 text-indigo-600 dark:bg-indigo-950/50 dark:text-indigo-300'
+                  : 'text-zinc-500 hover:text-zinc-900 hover:bg-zinc-200/60 dark:text-zinc-400 dark:hover:text-zinc-100 dark:hover:bg-zinc-800'
+              }`}
+            >
+              <FolderSearch className="w-4 h-4" />
+            </button>
             <button
               onClick={toggleTheme}
               title={isDark ? 'Switch to light' : 'Switch to dark'}

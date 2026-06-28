@@ -28,6 +28,9 @@ interface Config {
   indexDirs: string[];
   cacheMinutes: number;
   includeWorktrees: boolean;
+  // Default deep-scan mode when no per-request override is given. When true,
+  // every subfolder is scanned (not just docs/.claude/.github).
+  deepScan: boolean;
   // folder-name prefix -> canonical project name. Folds orphaned worktree
   // leftovers (dirs with no `.git`) into their real repo.
   aliases: Record<string, string>;
@@ -39,8 +42,15 @@ const DEFAULT_CONFIG: Config = {
   indexDirs: [],
   cacheMinutes: 5,
   includeWorktrees: false,
+  deepScan: false,
   aliases: {},
 };
+
+// Caps to keep deep scans bounded. SKIP_DIRS already excludes the big noise
+// sources (node_modules, .next, dist, ...), so this only stops a truly
+// pathological project from dominating the whole index.
+const DEEP_MAX_DEPTH = 8;
+const DEEP_MAX_PER_PROJECT = 10000;
 
 function loadConfig(): Config {
   try {
@@ -267,11 +277,61 @@ function addMarkdownFile(
   }
 }
 
-function scanProjectDir(
+// Deep scan: walk every subfolder of a project (respecting SKIP_DIRS, a depth
+// cap, and a per-project file cap). Root .html is still skipped as an app shell.
+function deepScanProject(
   projectPath: string,
   project: string,
   results: MarkdownDoc[]
 ): void {
+  const startCount = results.length;
+  const walk = (dir: string, depth: number) => {
+    if (depth > DEEP_MAX_DEPTH) return;
+    if (results.length - startCount >= DEEP_MAX_PER_PROJECT) return;
+
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      if (SKIP_DIRS.has(entry.name.toLowerCase())) continue;
+      // Skip hidden dirs/files except .claude and .github
+      if (
+        entry.name.startsWith('.') &&
+        !['.claude', '.github'].includes(entry.name.toLowerCase())
+      ) {
+        continue;
+      }
+
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(full, depth + 1);
+      } else if (entry.isFile()) {
+        if (/\.md$/i.test(entry.name)) {
+          addMarkdownFile(full, project, projectPath, results);
+        } else if (isHtmlFile(entry.name) && dir !== projectPath) {
+          addMarkdownFile(full, project, projectPath, results);
+        }
+      }
+    }
+  };
+  walk(projectPath, 0);
+}
+
+function scanProjectDir(
+  projectPath: string,
+  project: string,
+  results: MarkdownDoc[],
+  deep: boolean
+): void {
+  if (deep) {
+    deepScanProject(projectPath, project, results);
+    return;
+  }
+
   try {
     const entries = fs.readdirSync(projectPath, { withFileTypes: true });
 
@@ -339,28 +399,25 @@ function scanProjectDir(
   }
 }
 
-let cachedIndex: Index | null = null;
-let cacheTime: number = 0;
-let isIndexing: boolean = false;
+// Cache keyed by scan mode (curated vs deep), so toggling does not thrash.
+const caches = new Map<boolean, { index: Index; time: number }>();
+const indexing = new Set<boolean>();
 const CACHE_DURATION = (config.cacheMinutes ?? 5) * 60000;
 
-export function buildIndex(): Index {
+export function buildIndex(deep: boolean = config.deepScan ?? false): Index {
   const now = Date.now();
+  const cached = caches.get(deep);
 
-  // If not cached or expired, rebuild (but limit to top 200 projects for speed)
-  if (!cachedIndex || now - cacheTime > CACHE_DURATION) {
-    if (!isIndexing) {
-      isIndexing = true;
-      rebuildIndexAsync();
+  if (!cached || now - cached.time > CACHE_DURATION) {
+    if (!indexing.has(deep)) {
+      indexing.add(deep);
+      rebuildIndexAsync(deep);
     }
   }
 
-  // Return cached even if expired, while async rebuild happens
-  if (cachedIndex) {
-    return cachedIndex;
-  }
+  // Return cached even if expired, while the async rebuild happens.
+  if (cached) return cached.index;
 
-  // Return empty if not yet built
   return { docs: [], roots: INDEX_DIRS, lastUpdated: now };
 }
 
@@ -374,9 +431,11 @@ function deriveAlias(folderNames: string[]): string {
   return alias.length >= 5 ? alias : '';
 }
 
-async function rebuildIndexAsync(): Promise<void> {
+async function rebuildIndexAsync(deep: boolean): Promise<void> {
   try {
-    console.log('[Indexer] Building fresh index (async)...');
+    console.log(
+      `[Indexer] Building fresh index (async, ${deep ? 'deep' : 'curated'})...`
+    );
     const docs: MarkdownDoc[] = [];
 
     // Canonical project name -> absolute path of the folder we'll scan.
@@ -481,32 +540,31 @@ async function rebuildIndexAsync(): Promise<void> {
     }
 
     for (const [project, projectPath] of toScan) {
-      scanProjectDir(projectPath, project, docs);
+      scanProjectDir(projectPath, project, docs, deep);
     }
 
     // Sort by modified date, newest first
     docs.sort((a, b) => b.modified - a.modified);
 
-    cachedIndex = {
-      docs,
-      roots: INDEX_DIRS,
-      lastUpdated: Date.now(),
-    };
-    cacheTime = Date.now();
+    caches.set(deep, {
+      index: { docs, roots: INDEX_DIRS, lastUpdated: Date.now() },
+      time: Date.now(),
+    });
 
     console.log(
-      `[Indexer] Index built: ${docs.length} docs across ${toScan.size} projects ` +
+      `[Indexer] Index built (${deep ? 'deep' : 'curated'}): ${docs.length} docs ` +
+        `across ${toScan.size} projects ` +
         `(${worktreesSkipped} worktrees + ${orphansFolded} orphan dirs collapsed)`
     );
   } catch (e) {
     console.error('[Indexer] Error building index:', e);
   } finally {
-    isIndexing = false;
+    indexing.delete(deep);
   }
 }
 
-// Start initial index build on module load
-rebuildIndexAsync();
+// Start initial index build on module load (default mode)
+rebuildIndexAsync(config.deepScan ?? false);
 
 export function getIndexDirs(): string[] {
   return INDEX_DIRS;

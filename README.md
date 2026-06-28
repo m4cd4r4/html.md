@@ -72,6 +72,7 @@ Copy `config.example.json` to `config.json` and set your own roots:
 | `indexDirs` | Root folders to scan. Each direct subfolder is treated as a project. |
 | `cacheMinutes` | How long the index is cached before a background re-scan. |
 | `includeWorktrees` | `false` (default) collapses git worktrees into their main repo. Set `true` to list every worktree separately. |
+| `deepScan` | `false` (default) scans only the curated doc folders. `true` scans every subfolder. There is also a deep-scan toggle in the app's top-left, so you can switch per session without editing config. |
 | `aliases` | Maps an orphaned-worktree folder prefix to its real project name, for leftover worktree directories that no longer have a `.git`. |
 
 ## How the deduplication works
