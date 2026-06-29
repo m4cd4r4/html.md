@@ -1,5 +1,5 @@
 import fs from 'fs';
-import { getConfigDirs, setConfigDirs } from '@/lib/indexer';
+import { getConfigDirs, setConfigDirs, rebuildNow } from '@/lib/indexer';
 import { NextResponse } from 'next/server';
 
 export const dynamic = 'force-dynamic';
@@ -31,7 +31,10 @@ export async function POST(request: Request) {
       return NextResponse.json({ dirs: current });
     }
     const dirs = setConfigDirs([...current, clean]);
-    return NextResponse.json({ dirs });
+    // Warm the cache before responding so the UI's refetch gets the full index
+    // instead of the empty placeholder mid-rebuild.
+    const index = await rebuildNow();
+    return NextResponse.json({ dirs, docCount: index.docs.length });
   } catch (e) {
     console.error('Error adding scan dir:', e);
     return NextResponse.json({ error: 'Failed to add folder' }, { status: 500 });
@@ -46,7 +49,8 @@ export async function DELETE(request: Request) {
     const dirs = setConfigDirs(
       getConfigDirs().filter((d) => normalize(d).toLowerCase() !== clean)
     );
-    return NextResponse.json({ dirs });
+    const index = await rebuildNow();
+    return NextResponse.json({ dirs, docCount: index.docs.length });
   } catch (e) {
     console.error('Error removing scan dir:', e);
     return NextResponse.json(

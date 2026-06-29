@@ -622,6 +622,21 @@ async function rebuildIndexAsync(deep: boolean): Promise<void> {
   }
 }
 
+// Force a fresh build and wait for it, warming the cache. Used after the scan
+// dirs change so the next read isn't the empty placeholder.
+export async function rebuildNow(
+  deep: boolean = config.deepScan ?? false
+): Promise<Index> {
+  await rebuildIndexAsync(deep);
+  return (
+    caches.get(deep)?.index ?? {
+      docs: [],
+      roots: config.indexDirs,
+      lastUpdated: Date.now(),
+    }
+  );
+}
+
 // Start initial index build on module load (default mode)
 rebuildIndexAsync(config.deepScan ?? false);
 
