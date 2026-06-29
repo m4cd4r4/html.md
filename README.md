@@ -36,13 +36,14 @@ The catch with off-the-shelf tools (Foam, Obsidian, Dendron) is they index every
 ## Features
 
 - **Three-pane browser** - projects, documents, and a reader with an "on this page" table of contents
-- **Worktree deduplication** - each project appears once, with curated aliases for edge cases
+- **Worktree deduplication** - each project appears once, with curated aliases for edge cases; docs unique to a worktree branch still surface under that project
 - **Subfolder navigation** - group and filter a large project's docs by folder (`docs/prompts`, `docs/architecture`, ...)
 - **Type filter** - All / MD / HTML, with live counts
 - **Sort** - by folder, newest, oldest, or name A-Z
 - **Command palette** - press `Cmd/Ctrl + K` to fuzzy-jump to any doc across every project
 - **Bookmarks** - star documents and pin projects (saved locally)
 - **Edit in place** - open any markdown doc in a syntax-highlighted CodeMirror editor with a live split preview, and save straight to disk
+- **Manage scan folders in-app** - add or remove root folders from the sidebar (type a path, pick suggestions, or browse the filesystem with "Open Folder"); changes apply immediately with no restart
 - **Deep scan** - select one project and scan every subfolder for docs buried in `tests/`, `src/`, etc., or scan everything at once
 - **Reading niceties** - rendered markdown, copy buttons on code blocks, relative images served from disk
 - **Dark mode** - with a no-flash theme toggle
@@ -83,6 +84,10 @@ Open **http://localhost:3939**. The port is pinned so it will not fight other de
 
 ## Configuration
 
+You can manage scan folders two ways: from the **folder icon in the sidebar** (add a path, use a suggestion, or browse with "Open Folder"; removals and additions take effect right away), or by editing `config.json` directly.
+
+The Refresh button (⟳) forces a fresh filesystem scan, so a project you just created inside an existing root shows up without waiting for the cache to expire.
+
 Copy `config.example.json` to `config.json` and set your own roots:
 
 ```json
@@ -109,10 +114,16 @@ Copy `config.example.json` to `config.json` and set your own roots:
 For every top-level folder, html.md inspects `.git`:
 
 - a **directory** means a real repo or clone, so it is its own project;
-- a **file** means a git worktree, and the file points at the main repo, so its docs are already covered there and the worktree is skipped;
+- a **file** means a git worktree, and the file points at the main repo, so the worktree gets no tile of its own and is folded into that project;
 - **no `.git`** means a possible orphaned worktree directory, which is folded into its canonical project via a learned or configured alias.
 
 A safety net guarantees a worktree's main repo is always scanned, even if it lives outside your configured roots, so collapsing worktrees never loses a document.
+
+### Worktree docs still show up
+
+Folding a worktree does not hide its documentation. After scanning a project's main repo, html.md scans each of its worktrees (and orphaned worktree dirs) and adds any doc that is **not already in the main repo** - matched by its path within the project (folder + filename), so a `README.md` in both is only listed once. The practical effect: docs that live only on an unmerged worktree branch (a design spec, a handoff, a plan you are still drafting) appear **under the one project tile**, alongside the docs already on the main branch. You get a single entry per project and still see everything.
+
+The dedup check runs before a file is read, so this stays fast even across hundreds of worktrees.
 
 ## What gets indexed
 
