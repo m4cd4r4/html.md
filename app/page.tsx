@@ -36,7 +36,9 @@ import {
   X,
   Columns2,
   FolderSearch,
+  FolderCog,
 } from 'lucide-react';
+import FolderManager from './FolderManager';
 
 const STARRED_KEY = 'docs-dashboard:starred';
 const PINNED_KEY = 'docs-dashboard:pinned';
@@ -83,6 +85,7 @@ export default function Dashboard() {
   const [typeFilter, setTypeFilter] = useState<'all' | 'md' | 'html'>('all');
   const [isDark, setIsDark] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [foldersOpen, setFoldersOpen] = useState(false);
 
   // Global ⌘K / Ctrl+K to toggle the command palette
   useEffect(() => {
@@ -447,7 +450,9 @@ export default function Dashboard() {
   const handleRefresh = async () => {
     setLoading(true);
     try {
-      const response = await fetch(`/api/index${deepScan ? '?deep=1' : ''}`);
+      const response = await fetch(
+        `/api/index?refresh=1${deepScan ? '&deep=1' : ''}`
+      );
       if (!response.ok) throw new Error('Failed to fetch index');
       setIndex(await response.json());
       setError(null);
@@ -653,6 +658,13 @@ export default function Dashboard() {
               ) : (
                 <Moon className="w-4 h-4" />
               )}
+            </button>
+            <button
+              onClick={() => setFoldersOpen(true)}
+              title="Manage scan folders"
+              className="grid place-items-center w-7 h-7 rounded-md text-zinc-500 hover:text-zinc-900 hover:bg-zinc-200/60 dark:text-zinc-400 dark:hover:text-zinc-100 dark:hover:bg-zinc-800 transition-colors"
+            >
+              <FolderCog className="w-4 h-4" />
             </button>
             <button
               onClick={handleRefresh}
@@ -1192,6 +1204,11 @@ export default function Dashboard() {
         docs={allDocs}
         onClose={() => setPaletteOpen(false)}
         onSelect={handlePaletteSelect}
+      />
+      <FolderManager
+        open={foldersOpen}
+        onClose={() => setFoldersOpen(false)}
+        onChange={handleRefresh}
       />
     </div>
   );

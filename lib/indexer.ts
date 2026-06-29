@@ -65,8 +65,37 @@ function loadConfig(): Config {
   }
 }
 
-const config = loadConfig();
-const INDEX_DIRS = config.indexDirs;
+let config = loadConfig();
+
+const CONFIG_PATH = path.join(process.cwd(), 'config.json');
+
+// Re-read config.json from disk. Used after the scan dirs are edited in-app so
+// changes take effect without a server restart.
+export function reloadConfig(): void {
+  config = loadConfig();
+}
+
+// Persist a new set of scan dirs to config.json, then drop every cache so the
+// next index build reflects them immediately.
+export function setConfigDirs(dirs: string[]): string[] {
+  const cleaned = Array.from(
+    new Set(
+      dirs
+        .map((d) => d.replace(/\\/g, '/').replace(/\/+$/, '').trim())
+        .filter(Boolean)
+    )
+  );
+  const next = { ...config, indexDirs: cleaned };
+  fs.writeFileSync(CONFIG_PATH, JSON.stringify(next, null, 2) + '\n', 'utf8');
+  config = next;
+  caches.clear();
+  projectDeepCaches.clear();
+  return cleaned;
+}
+
+export function getConfigDirs(): string[] {
+  return config.indexDirs;
+}
 
 const SKIP_DIRS = new Set([
   'node_modules',
@@ -229,17 +258,26 @@ function addMarkdownFile(
   filePath: string,
   project: string,
   projectRoot: string,
-  results: MarkdownDoc[]
+  results: MarkdownDoc[],
+  // When given, files whose project-relative key is already in the set are
+  // skipped before their content is read (keeps worktree dedup cheap).
+  skip?: Set<string>
 ): void {
   try {
-    const content = fs.readFileSync(filePath, 'utf8');
-    const stat = fs.statSync(filePath);
     const fileName = path.basename(filePath);
-
     const rel = path
       .relative(projectRoot, path.dirname(filePath))
       .replace(/\\/g, '/');
     const folder = rel === '' ? '(root)' : rel;
+
+    if (skip) {
+      const key = `${project}${folder}${fileName.toLowerCase()}`;
+      if (skip.has(key)) return;
+      skip.add(key);
+    }
+
+    const content = fs.readFileSync(filePath, 'utf8');
+    const stat = fs.statSync(filePath);
 
     const base = {
       // Full path (normalized) - guaranteed unique. A slug would collide for
@@ -282,7 +320,8 @@ function addMarkdownFile(
 function deepScanProject(
   projectPath: string,
   project: string,
-  results: MarkdownDoc[]
+  results: MarkdownDoc[],
+  skip?: Set<string>
 ): void {
   const startCount = results.length;
   const walk = (dir: string, depth: number) => {
@@ -311,9 +350,9 @@ function deepScanProject(
         walk(full, depth + 1);
       } else if (entry.isFile()) {
         if (/\.md$/i.test(entry.name)) {
-          addMarkdownFile(full, project, projectPath, results);
+          addMarkdownFile(full, project, projectPath, results, skip);
         } else if (isHtmlFile(entry.name) && dir !== projectPath) {
-          addMarkdownFile(full, project, projectPath, results);
+          addMarkdownFile(full, project, projectPath, results, skip);
         }
       }
     }
@@ -325,10 +364,13 @@ function scanProjectDir(
   projectPath: string,
   project: string,
   results: MarkdownDoc[],
-  deep: boolean
+  deep: boolean,
+  // Optional dedup set: files whose key is already present are skipped before
+  // their content is read. Used when folding worktree extras into a project.
+  skip?: Set<string>
 ): void {
   if (deep) {
-    deepScanProject(projectPath, project, results);
+    deepScanProject(projectPath, project, results, skip);
     return;
   }
 
@@ -343,7 +385,8 @@ function scanProjectDir(
           path.join(projectPath, entry.name),
           project,
           projectPath,
-          results
+          results,
+          skip
         );
       }
 
@@ -365,7 +408,8 @@ function scanProjectDir(
                 path.join(folderPath, subEntry.name),
                 project,
                 projectPath,
-                results
+                results,
+                skip
               );
             } else if (subEntry.isDirectory() && subEntry.name !== '.git') {
               // One more level deep for subdirs within docs/
@@ -380,7 +424,8 @@ function scanProjectDir(
                       path.join(subFolderPath, subSubEntry.name),
                       project,
                       projectPath,
-                      results
+                      results,
+                      skip
                     );
                   }
                 }
@@ -418,7 +463,7 @@ export function buildIndex(deep: boolean = config.deepScan ?? false): Index {
   // Return cached even if expired, while the async rebuild happens.
   if (cached) return cached.index;
 
-  return { docs: [], roots: INDEX_DIRS, lastUpdated: now };
+  return { docs: [], roots: config.indexDirs, lastUpdated: now };
 }
 
 // Derive a safe alias prefix from a project's live worktree folder names:
@@ -436,16 +481,25 @@ function deriveAlias(folderNames: string[]): string {
 // single-project deep scan.
 function resolveProjectPaths(): {
   toScan: Map<string, string>;
+  worktreePaths: Map<string, string[]>;
   worktreesSkipped: number;
   orphansFolded: number;
 } {
   const toScan = new Map<string, string>();
   const worktreeMainRepos = new Map<string, string>();
   const worktreeFolders = new Map<string, string[]>();
+  // project -> worktree/orphan dirs folded into it, scanned for unique docs
+  // (branch work not yet on the main repo) so it isn't invisible.
+  const worktreePaths = new Map<string, string[]>();
+  const addWorktreePath = (project: string, dir: string) => {
+    const list = worktreePaths.get(project) ?? [];
+    list.push(dir);
+    worktreePaths.set(project, list);
+  };
   const orphans: { name: string; path: string }[] = [];
   let worktreesSkipped = 0;
 
-  for (const baseDir of INDEX_DIRS) {
+  for (const baseDir of config.indexDirs) {
     if (!fs.existsSync(baseDir)) continue;
 
     try {
@@ -479,6 +533,7 @@ function resolveProjectPaths(): {
           const list = worktreeFolders.get(klass.project) ?? [];
           list.push(entry.name);
           worktreeFolders.set(klass.project, list);
+          addWorktreePath(klass.project, projectPath);
           continue;
         }
 
@@ -524,6 +579,7 @@ function resolveProjectPaths(): {
     }
     if (matched) {
       orphansFolded++;
+      addWorktreePath(matched, orphan.path);
     } else if (!toScan.has(orphan.name)) {
       toScan.set(orphan.name, orphan.path);
     }
@@ -536,7 +592,37 @@ function resolveProjectPaths(): {
     }
   }
 
-  return { toScan, worktreesSkipped, orphansFolded };
+  return { toScan, worktreePaths, worktreesSkipped, orphansFolded };
+}
+
+// Identity of a doc within its project, by relative location. Used to keep a
+// worktree's copy of a file that already exists in the main repo from showing
+// up twice; only files unique to the worktree are surfaced.
+function docDedupeKey(d: MarkdownDoc): string {
+  return `${d.project}\u001f${d.folder}\u001f${d.fileName.toLowerCase()}`;
+}
+
+// Scan worktree/orphan dirs and append only docs not already present in the
+// project (by relative path), so unmerged branch docs appear under the folded
+// project tile without duplicating files the main repo already has.
+function appendWorktreeExtras(
+  worktreePaths: Map<string, string[]>,
+  docs: MarkdownDoc[],
+  deep: boolean,
+  onlyProject?: string
+): number {
+  const seen = new Set(docs.map(docDedupeKey));
+  const before = docs.length;
+  for (const [project, paths] of worktreePaths) {
+    if (onlyProject && project !== onlyProject) continue;
+    for (const wt of paths) {
+      if (!fs.existsSync(wt)) continue;
+      // Pass `seen` as the skip set so files already in the main repo (or an
+      // earlier worktree) are skipped before their content is read.
+      scanProjectDir(wt, project, docs, deep, seen);
+    }
+  }
+  return docs.length - before;
 }
 
 // Per-project deep index, built synchronously (one project is fast).
@@ -547,15 +633,16 @@ export function buildProjectDeep(project: string): Index {
   const cached = projectDeepCaches.get(project);
   if (cached && now - cached.time < CACHE_DURATION) return cached.index;
 
-  const { toScan } = resolveProjectPaths();
+  const { toScan, worktreePaths } = resolveProjectPaths();
   const projectPath = toScan.get(project);
   const docs: MarkdownDoc[] = [];
   if (projectPath) {
     scanProjectDir(projectPath, project, docs, true);
-    docs.sort((a, b) => b.modified - a.modified);
   }
+  appendWorktreeExtras(worktreePaths, docs, true, project);
+  docs.sort((a, b) => b.modified - a.modified);
 
-  const index: Index = { docs, roots: INDEX_DIRS, lastUpdated: now };
+  const index: Index = { docs, roots: config.indexDirs, lastUpdated: now };
   projectDeepCaches.set(project, { index, time: now });
   console.log(`[Indexer] Deep-scanned project "${project}": ${docs.length} docs`);
   return index;
@@ -567,24 +654,29 @@ async function rebuildIndexAsync(deep: boolean): Promise<void> {
       `[Indexer] Building fresh index (async, ${deep ? 'deep' : 'curated'})...`
     );
     const docs: MarkdownDoc[] = [];
-    const { toScan, worktreesSkipped, orphansFolded } = resolveProjectPaths();
+    const { toScan, worktreePaths, worktreesSkipped, orphansFolded } =
+      resolveProjectPaths();
 
     for (const [project, projectPath] of toScan) {
       scanProjectDir(projectPath, project, docs, deep);
     }
 
+    // Surface docs that live only in a worktree/orphan branch.
+    const extras = appendWorktreeExtras(worktreePaths, docs, deep);
+
     // Sort by modified date, newest first
     docs.sort((a, b) => b.modified - a.modified);
 
     caches.set(deep, {
-      index: { docs, roots: INDEX_DIRS, lastUpdated: Date.now() },
+      index: { docs, roots: config.indexDirs, lastUpdated: Date.now() },
       time: Date.now(),
     });
 
     console.log(
       `[Indexer] Index built (${deep ? 'deep' : 'curated'}): ${docs.length} docs ` +
         `across ${toScan.size} projects ` +
-        `(${worktreesSkipped} worktrees + ${orphansFolded} orphan dirs collapsed)`
+        `(${worktreesSkipped} worktrees + ${orphansFolded} orphan dirs collapsed, ` +
+        `${extras} worktree-only docs surfaced)`
     );
   } catch (e) {
     console.error('[Indexer] Error building index:', e);
@@ -593,9 +685,24 @@ async function rebuildIndexAsync(deep: boolean): Promise<void> {
   }
 }
 
+// Force a fresh build and wait for it, warming the cache. Used after the scan
+// dirs change so the next read isn't the empty placeholder.
+export async function rebuildNow(
+  deep: boolean = config.deepScan ?? false
+): Promise<Index> {
+  await rebuildIndexAsync(deep);
+  return (
+    caches.get(deep)?.index ?? {
+      docs: [],
+      roots: config.indexDirs,
+      lastUpdated: Date.now(),
+    }
+  );
+}
+
 // Start initial index build on module load (default mode)
 rebuildIndexAsync(config.deepScan ?? false);
 
 export function getIndexDirs(): string[] {
-  return INDEX_DIRS;
+  return config.indexDirs;
 }
