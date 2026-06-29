@@ -450,7 +450,9 @@ export default function Dashboard() {
   const handleRefresh = async () => {
     setLoading(true);
     try {
-      const response = await fetch(`/api/index${deepScan ? '?deep=1' : ''}`);
+      const response = await fetch(
+        `/api/index?refresh=1${deepScan ? '&deep=1' : ''}`
+      );
       if (!response.ok) throw new Error('Failed to fetch index');
       setIndex(await response.json());
       setError(null);
