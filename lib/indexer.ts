@@ -65,8 +65,37 @@ function loadConfig(): Config {
   }
 }
 
-const config = loadConfig();
-const INDEX_DIRS = config.indexDirs;
+let config = loadConfig();
+
+const CONFIG_PATH = path.join(process.cwd(), 'config.json');
+
+// Re-read config.json from disk. Used after the scan dirs are edited in-app so
+// changes take effect without a server restart.
+export function reloadConfig(): void {
+  config = loadConfig();
+}
+
+// Persist a new set of scan dirs to config.json, then drop every cache so the
+// next index build reflects them immediately.
+export function setConfigDirs(dirs: string[]): string[] {
+  const cleaned = Array.from(
+    new Set(
+      dirs
+        .map((d) => d.replace(/\\/g, '/').replace(/\/+$/, '').trim())
+        .filter(Boolean)
+    )
+  );
+  const next = { ...config, indexDirs: cleaned };
+  fs.writeFileSync(CONFIG_PATH, JSON.stringify(next, null, 2) + '\n', 'utf8');
+  config = next;
+  caches.clear();
+  projectDeepCaches.clear();
+  return cleaned;
+}
+
+export function getConfigDirs(): string[] {
+  return config.indexDirs;
+}
 
 const SKIP_DIRS = new Set([
   'node_modules',
@@ -418,7 +447,7 @@ export function buildIndex(deep: boolean = config.deepScan ?? false): Index {
   // Return cached even if expired, while the async rebuild happens.
   if (cached) return cached.index;
 
-  return { docs: [], roots: INDEX_DIRS, lastUpdated: now };
+  return { docs: [], roots: config.indexDirs, lastUpdated: now };
 }
 
 // Derive a safe alias prefix from a project's live worktree folder names:
@@ -445,7 +474,7 @@ function resolveProjectPaths(): {
   const orphans: { name: string; path: string }[] = [];
   let worktreesSkipped = 0;
 
-  for (const baseDir of INDEX_DIRS) {
+  for (const baseDir of config.indexDirs) {
     if (!fs.existsSync(baseDir)) continue;
 
     try {
@@ -555,7 +584,7 @@ export function buildProjectDeep(project: string): Index {
     docs.sort((a, b) => b.modified - a.modified);
   }
 
-  const index: Index = { docs, roots: INDEX_DIRS, lastUpdated: now };
+  const index: Index = { docs, roots: config.indexDirs, lastUpdated: now };
   projectDeepCaches.set(project, { index, time: now });
   console.log(`[Indexer] Deep-scanned project "${project}": ${docs.length} docs`);
   return index;
@@ -577,7 +606,7 @@ async function rebuildIndexAsync(deep: boolean): Promise<void> {
     docs.sort((a, b) => b.modified - a.modified);
 
     caches.set(deep, {
-      index: { docs, roots: INDEX_DIRS, lastUpdated: Date.now() },
+      index: { docs, roots: config.indexDirs, lastUpdated: Date.now() },
       time: Date.now(),
     });
 
@@ -597,5 +626,5 @@ async function rebuildIndexAsync(deep: boolean): Promise<void> {
 rebuildIndexAsync(config.deepScan ?? false);
 
 export function getIndexDirs(): string[] {
-  return INDEX_DIRS;
+  return config.indexDirs;
 }
